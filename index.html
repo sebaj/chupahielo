@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ChupaHielo ❄️</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0e1420;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;user-select:none;-webkit-user-select:none}
+  #c{display:block;cursor:pointer}
+  .chip{position:fixed;top:14px;padding:8px 16px;background:rgba(10,20,35,.78);color:#fff;border-radius:12px;font-weight:800;font-size:20px;letter-spacing:.5px;border:1px solid rgba(255,255,255,.15);text-align:center;z-index:5}
+  .chip small{display:block;font-weight:500;font-size:11px;opacity:.65;letter-spacing:1px}
+  #levelChip{left:14px}
+  #scoreChip{right:14px}
+  #prompt{position:fixed;left:50%;bottom:170px;transform:translateX(-50%);padding:13px 24px;font-size:17px;font-weight:800;color:#3b2310;background:linear-gradient(#ffd76e,#f0a93a);border:none;border-radius:14px;cursor:pointer;box-shadow:0 5px 16px rgba(0,0,0,.45);display:none;z-index:5;font-family:inherit}
+  #prompt:hover{filter:brightness(1.08)}
+  #banner{position:fixed;left:50%;top:28%;transform:translate(-50%,-50%) scale(.8);font-size:clamp(32px,6vw,52px);font-weight:900;color:#fff;text-shadow:0 3px 14px rgba(0,0,0,.7);opacity:0;pointer-events:none;transition:all .3s ease;z-index:6;white-space:nowrap}
+  #banner.show{opacity:1;transform:translate(-50%,-50%) scale(1)}
+  .overlay{position:fixed;inset:0;background:rgba(8,14,26,.86);display:flex;flex-direction:column;align-items:center;justify-content:center;color:#fff;text-align:center;padding:24px;z-index:10}
+  .overlay h1{font-size:clamp(38px,8vw,68px);margin:0 0 6px;text-shadow:0 4px 18px rgba(80,180,255,.35)}
+  .overlay p{max-width:520px;line-height:1.65;color:#cfe0f2;margin:.4em 0}
+  .overlay .keys{font-size:14px;color:#9fb8d4;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.12);border-radius:12px;padding:12px 20px;margin:14px 0}
+  .overlay button{margin-top:18px;padding:14px 38px;font-size:19px;font-weight:800;color:#10243a;background:linear-gradient(#9fe0ff,#4fb7e8);border:none;border-radius:14px;cursor:pointer;font-family:inherit;box-shadow:0 5px 18px rgba(79,183,232,.4)}
+  .overlay button:hover{filter:brightness(1.08)}
+  #over{display:none}
+  #over .stats{font-size:18px;margin-top:8px;color:#ffd76e;font-weight:700}
+  kbd{background:#27384e;border-radius:5px;padding:2px 7px;border:1px solid #41597a;font-family:inherit;font-size:13px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="chip" id="levelChip">NIVEL <span id="lvl">1</span><small id="lvlNext"></small></div>
+<div class="chip" id="scoreChip"><span id="pts">0</span><small>PUNTOS</small></div>
+
+<button id="prompt">❄️ Pedir hielo <kbd>E</kbd></button>
+<div id="banner"></div>
+
+<div class="overlay" id="start">
+  <h1>❄️ ChupaHielo</h1>
+  <p>Una mamá rusa pasea con su hija, fanática de comer hielo.<br>
+  Buscá cafeterías <b>КАФЕ</b>, pedí un vaso de hielo y hacé que la nena chupe todos los cubitos <b>antes de que se derritan</b>.</p>
+  <div class="keys">
+    <kbd>←</kbd> <kbd>→</kbd> o <kbd>A</kbd> <kbd>D</kbd> — caminar &nbsp;·&nbsp;
+    <kbd>E</kbd> — pedir hielo &nbsp;·&nbsp;
+    <kbd>ESPACIO</kbd> o <b>click</b> (repetido) — ¡chupar!
+  </div>
+  <p style="font-size:14px;color:#9fb8d4">Cubito comido = puntos · Cubito derretido = pierdes puntos.<br>Si llegás a 0 puntos, fin del juego.</p>
+  <button id="playBtn">Jugar</button>
+</div>
+
+<div class="overlay" id="over">
+  <h1>💧 Fin del juego</h1>
+  <p>¡Se derritieron demasiados hielos!</p>
+  <div class="stats">Cubitos comidos: <span id="statEaten">0</span> · Nivel alcanzado: <span id="statLvl">1</span></div>
+  <button id="retryBtn">Reintentar <kbd style="color:#10243a;background:rgba(255,255,255,.4);border-color:rgba(0,0,0,.2)">R</kbd></button>
+</div>
+
+<script>
+'use strict';
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+let W = 0, H = 0;
+function resize(){ W = cvs.width = innerWidth; H = cvs.height = innerHeight; }
+addEventListener('resize', resize); resize();
+
+const $ = id => document.getElementById(id);
+const SLOT = 240;            // ancho de cada edificio
+const SPEED = 270;           // velocidad de caminata px/s
+const START_SCORE = 30;
+
+// ---------- estado ----------
+let G;
+function reset(){
+  G = {
+    state:'start',                 // start | walk | drink | gameover
+    score:START_SCORE, xp:0, level:1, eaten:0, melted:0,
+    player:{ x:0, facing:1, walkT:0, moving:false },
+    cafes:[{ x:430, visited:false }],
+    maxRight:430, minLeft:430,
+    glass:null, nearCafe:null,
+    lickFlash:0, shake:0, time:0
+  };
+}
+reset();
+
+function cafeSpacing(){ return 540 + (G.level - 1) * 190; }
+
+function ensureCafes(){
+  while (G.maxRight < G.player.x + W * 1.6){
+    G.maxRight += cafeSpacing() * (0.8 + Math.random() * 0.5);
+    G.cafes.push({ x:G.maxRight, visited:false });
+  }
+  while (G.minLeft > G.player.x - W * 1.6){
+    G.minLeft -= cafeSpacing() * (0.8 + Math.random() * 0.5);
+    G.cafes.push({ x:G.minLeft, visited:false });
+  }
+}
+
+function meltRate(){ return 1 / Math.max(4.5, 14 - (G.level - 1) * 1.6); }
+
+function orderIce(cafe){
+  const n = 3 + Math.floor(Math.random() * 6);   // 3..8 cubitos
+  const cubes = [];
+  for (let i = 0; i < n; i++){
+    cubes.push({
+      need: 4 + Math.min(5, G.level - 1) + (Math.random() < 0.4 ? 1 : 0),
+      licks: 0, temp: 1, state:'ok'
+    });
+  }
+  G.glass = { cubes, idx:0, cafe };
+  G.state = 'drink';
+  $('prompt').style.display = 'none';
+}
+
+function addScore(d){
+  G.score += d;
+  if (d > 0){
+    G.xp += d;
+    const lv = 1 + Math.floor(G.xp / 140);
+    if (lv > G.level){ G.level = lv; showBanner('¡Nivel ' + lv + '! 🧊 ¡El hielo se derrite más rápido!'); }
+  }
+  if (G.score <= 0){ G.score = 0; gameOver(); }
+}
+
+function lick(){
+  if (G.state !== 'drink' || !G.glass) return;
+  const c = G.glass.cubes[G.glass.idx];
+  if (!c || c.state !== 'ok') return;
+  c.licks++;
+  G.lickFlash = 0.16;
+  if (c.licks >= c.need){
+    c.state = 'eaten';
+    G.eaten++;
+    addScore(10 + 2 * (G.level - 1));
+  }
+}
+
+function gameOver(){
+  G.state = 'gameover';
+  G.glass = null;
+  $('prompt').style.display = 'none';
+  $('statEaten').textContent = G.eaten;
+  $('statLvl').textContent = G.level;
+  $('over').style.display = 'flex';
+}
+
+let bannerTimer = null;
+function showBanner(t){
+  const b = $('banner');
+  b.textContent = t;
+  b.classList.add('show');
+  clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => b.classList.remove('show'), 1600);
+}
+
+function startGame(){ $('start').style.display = 'none'; G.state = 'walk'; }
+function restart(){ reset(); $('over').style.display = 'none'; G.state = 'walk'; }
+
+// ---------- input ----------
+const keys = {};
+addEventListener('keydown', e => {
+  if ([' ','ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)) e.preventDefault();
+  keys[e.key.toLowerCase()] = true;
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  if (G.state === 'drink' && e.key === ' ') lick();
+  else if (G.state === 'walk' && (k === 'e' || e.key === 'Enter') && G.nearCafe) orderIce(G.nearCafe);
+  else if (G.state === 'gameover' && k === 'r') restart();
+  else if (G.state === 'start' && (e.key === ' ' || e.key === 'Enter')) startGame();
+});
+addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+cvs.addEventListener('pointerdown', () => { if (G.state === 'drink') lick(); });
+$('playBtn').addEventListener('click', startGame);
+$('retryBtn').addEventListener('click', restart);
+$('prompt').addEventListener('click', () => { if (G.state === 'walk' && G.nearCafe) orderIce(G.nearCafe); });
+
+// ---------- nieve ----------
+const flakes = [];
+for (let i = 0; i < 90; i++){
+  flakes.push({ x:Math.random()*2000, y:Math.random()*1200, r:1+Math.random()*2.2, v:18+Math.random()*30, ph:Math.random()*6.28 });
+}
+
+// ---------- update ----------
+function update(dt){
+  G.time += dt;
+  if (G.lickFlash > 0) G.lickFlash -= dt;
+  if (G.shake > 0) G.shake -= dt;
+
+  for (const f of flakes){
+    f.y += f.v * dt;
+    f.x += Math.sin(G.time * 1.4 + f.ph) * 14 * dt;
+    if (f.y > H + 5){ f.y = -5; f.x = Math.random() * W; }
+    if (f.x > W + 5) f.x = -5;
+    if (f.x < -5) f.x = W + 5;
+  }
+
+  if (G.state === 'walk'){
+    const dir = (keys['arrowright'] || keys['d'] ? 1 : 0) - (keys['arrowleft'] || keys['a'] ? 1 : 0);
+    G.player.moving = dir !== 0;
+    if (dir !== 0){
+      G.player.x += dir * SPEED * dt;
+      G.player.facing = dir;
+      G.player.walkT += dt;
+    }
+    ensureCafes();
+    G.nearCafe = G.cafes.find(c => !c.visited && Math.abs(c.x - G.player.x) < 95) || null;
+    $('prompt').style.display = G.nearCafe ? 'block' : 'none';
+  } else {
+    G.player.moving = false;
+    $('prompt').style.display = 'none';
+  }
+
+  if (G.state === 'drink' && G.glass){
+    const g = G.glass;
+    for (const c of g.cubes){
+      if (c.state === 'ok'){
+        c.temp -= meltRate() * dt;
+        if (c.temp <= 0){
+          c.temp = 0; c.state = 'melted'; G.melted++;
+          G.shake = 0.4;
+          addScore(-15);
+          if (G.state === 'gameover') return;
+        }
+      }
+    }
+    while (g.idx < g.cubes.length && g.cubes[g.idx].state !== 'ok') g.idx++;
+    if (g.idx >= g.cubes.length){
+      g.cafe.visited = true;
+      G.glass = null;
+      G.state = 'walk';
+    }
+  }
+
+}
+
+function updateHUD(){
+  $('pts').textContent = G.score;
+  $('lvl').textContent = G.level;
+  $('lvlNext').textContent = 'siguiente: ' + (G.level * 140 - G.xp) + ' pts';
+}
+
+// ---------- helpers de dibujo ----------
+function hash(n){ const s = Math.sin(n * 127.1 + 13.7) * 43758.5453; return s - Math.floor(s); }
+function rr(x, y, w, h, r){
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+  else ctx.rect(x, y, w, h);
+}
+
+// ---------- render ----------
+function render(){
+  const gy = H - 86;                       // línea de piso
+  const shakeX = G.shake > 0 ? (Math.random() - 0.5) * G.shake * 16 : 0;
+  const cam = G.player.x - W / 2 + shakeX;
+
+  // cielo
+  const sky = ctx.createLinearGradient(0, 0, 0, gy);
+  sky.addColorStop(0, '#aebfd6'); sky.addColorStop(0.6, '#cdd9e6'); sky.addColorStop(1, '#e8eef2');
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+
+  // sol pálido de invierno
+  ctx.fillStyle = 'rgba(255,245,220,.85)';
+  ctx.beginPath(); ctx.arc(W * 0.78, H * 0.16, 34, 0, 7); ctx.fill();
+
+  // skyline lejano (parallax) con alguna cúpula
+  const pcam = cam * 0.35;
+  ctx.fillStyle = '#94a8c0';
+  const p0 = Math.floor(pcam / 200) - 1, p1 = Math.floor((pcam + W) / 200) + 1;
+  for (let i = p0; i <= p1; i++){
+    const x = i * 200 - pcam;
+    const bh = 90 + hash(i * 3.3) * 130;
+    ctx.fillRect(x, gy - bh, 188, bh);
+    if (hash(i * 7.7) > 0.82){          // cúpula tipo Europa del Este
+      ctx.beginPath(); ctx.arc(x + 94, gy - bh - 10, 16, 0, 7); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x + 94, gy - bh - 40);
+      ctx.lineTo(x + 86, gy - bh - 18); ctx.lineTo(x + 102, gy - bh - 18); ctx.fill();
+    }
+  }
+
+  // edificios principales
+  const pal = ['#c98c5a', '#a86b5b', '#8fa07a', '#7d90ae', '#b08aa0', '#c9b37e', '#9a8fb8'];
+  const b0 = Math.floor(cam / SLOT) - 1, b1 = Math.floor((cam + W) / SLOT) + 1;
+  for (let i = b0; i <= b1; i++){
+    const x = i * SLOT - cam;
+    const bh = 150 + hash(i) * 170;
+    ctx.fillStyle = pal[Math.floor(hash(i * 1.7 + 5) * pal.length)];
+    ctx.fillRect(x, gy - bh, SLOT - 12, bh);
+    ctx.fillStyle = 'rgba(0,0,0,.16)';
+    ctx.fillRect(x, gy - bh, SLOT - 12, 9);                 // cornisa
+    const rows = Math.max(1, Math.floor((bh - 36) / 50));
+    for (let r = 0; r < rows; r++){
+      for (let c = 0; c < 3; c++){
+        const wx = x + 24 + c * 68, wy = gy - bh + 24 + r * 50;
+        ctx.fillStyle = hash(i * 13 + r * 7 + c * 3) > 0.72 ? '#ffd97a' : '#2e3d52';
+        ctx.fillRect(wx, wy, 26, 32);
+        ctx.fillStyle = 'rgba(255,255,255,.35)';
+        ctx.fillRect(wx, wy, 26, 3);
+      }
+    }
+  }
+
+  // cafeterías
+  for (const cafe of G.cafes){
+    const x = cafe.x - cam;
+    if (x < -200 || x > W + 200) continue;
+    drawCafe(x, gy, cafe);
+  }
+
+  // vereda y calle
+  ctx.fillStyle = '#9aa6b2'; ctx.fillRect(0, gy, W, 26);
+  ctx.fillStyle = '#7e8a96'; ctx.fillRect(0, gy + 24, W, 4);
+  ctx.fillStyle = '#4c545e'; ctx.fillRect(0, gy + 28, W, H - gy - 28);
+  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 3;
+  ctx.setLineDash([26, 22]); ctx.lineDashOffset = -((cam % 48) + 48) % 48;
+  ctx.beginPath(); ctx.moveTo(0, gy + 60); ctx.lineTo(W, gy + 60); ctx.stroke();
+  ctx.setLineDash([]);
+
+  drawCharacters(gy);
+
+  // nieve
+  ctx.fillStyle = 'rgba(255,255,255,.9)';
+  for (const f of flakes){ ctx.beginPath(); ctx.arc(f.x, f.y, f.r, 0, 7); ctx.fill(); }
+
+  if (G.state === 'drink' && G.glass) drawGlassPanel();
+}
+
+function drawCafe(x, gy, cafe){
+  const w = 184, h = 112;
+  // fachada del local
+  ctx.fillStyle = cafe.visited ? '#6f6f6f' : '#7e3b3b';
+  ctx.fillRect(x - w / 2, gy - h, w, h);
+  ctx.fillStyle = 'rgba(0,0,0,.2)';
+  ctx.fillRect(x - w / 2, gy - h, w, 6);
+  // vidriera
+  ctx.fillStyle = cafe.visited ? '#9c9c9c' : '#bcd7e8';
+  ctx.fillRect(x - w / 2 + 14, gy - h + 34, 76, 52);
+  ctx.strokeStyle = '#3a2a22'; ctx.lineWidth = 4;
+  ctx.strokeRect(x - w / 2 + 14, gy - h + 34, 76, 52);
+  ctx.strokeStyle = 'rgba(255,255,255,.5)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(x - w / 2 + 24, gy - h + 78); ctx.lineTo(x - w / 2 + 56, gy - h + 42); ctx.stroke();
+  // puerta
+  ctx.fillStyle = '#3c2a20';
+  ctx.fillRect(x + 18, gy - 70, 40, 70);
+  ctx.fillStyle = '#d8b25c';
+  ctx.beginPath(); ctx.arc(x + 26, gy - 36, 3, 0, 7); ctx.fill();
+  // toldo a rayas
+  for (let s = 0; s < 6; s++){
+    ctx.fillStyle = s % 2 ? '#f3f0e8' : (cafe.visited ? '#8a8a8a' : '#d34a4a');
+    ctx.fillRect(x - w / 2 + s * (w / 6), gy - h - 4, w / 6, 20);
+    ctx.beginPath();
+    ctx.arc(x - w / 2 + s * (w / 6) + w / 12, gy - h + 16, w / 12, 0, Math.PI);
+    ctx.fill();
+  }
+  // soporte y cartel con taza
+  ctx.strokeStyle = '#3a2a22'; ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.moveTo(x, gy - h - 4); ctx.lineTo(x, gy - h - 26); ctx.stroke();
+  ctx.fillStyle = cafe.visited ? '#555' : '#4a2c1a';
+  rr(x - 44, gy - h - 88, 88, 62, 8); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.3)'; ctx.lineWidth = 2;
+  rr(x - 44, gy - h - 88, 88, 62, 8); ctx.stroke();
+  // taza
+  const cy = gy - h - 72;
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(x - 11, cy, 22, 15);
+  ctx.fillRect(x - 14, cy + 16, 28, 3);
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.arc(x + 13, cy + 7, 5, -Math.PI / 2, Math.PI / 2); ctx.stroke();
+  // vapor
+  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(255,255,255,.7)';
+  for (const off of [-5, 4]){
+    ctx.beginPath();
+    ctx.moveTo(x + off, cy - 3);
+    ctx.quadraticCurveTo(x + off + 3, cy - 8, x + off, cy - 12);
+    ctx.stroke();
+  }
+  // texto
+  ctx.fillStyle = '#ffd97a'; ctx.font = '900 13px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(cafe.visited ? 'CERRADO' : 'КАФЕ', x, gy - h - 34);
+  ctx.textAlign = 'left';
+}
+
+function drawCharacters(gy){
+  const px = W / 2;
+  const f = G.player.facing;
+  const dxx = px + 36 * f;                          // la hija va adelante
+  const t = G.player.walkT;
+  const bobM = G.player.moving ? Math.abs(Math.sin(t * 9)) * 3 : 0;
+  const bobD = G.player.moving ? Math.abs(Math.sin(t * 9 + 1)) * 3 : 0;
+
+  // brazos tomados de la mano
+  const hx = (px + dxx) / 2, hy = gy - 38;
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = '#3f5575'; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(px + 10 * f, gy - 64 - bobM); ctx.lineTo(hx, hy); ctx.stroke();
+  ctx.strokeStyle = '#e8889c'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(dxx - 9 * f, gy - 34 - bobD); ctx.lineTo(hx, hy); ctx.stroke();
+  ctx.fillStyle = '#f2c9a0';
+  ctx.beginPath(); ctx.arc(hx, hy, 4, 0, 7); ctx.fill();
+
+  drawMother(px, gy, bobM, t, f);
+  drawDaughter(dxx, gy, bobD, t, f);
+}
+
+function drawMother(x, gy, bob, t, f){
+  const y = gy - bob;
+  const sw = G.player.moving ? Math.sin(t * 9) * 9 : 0;
+  // piernas
+  ctx.strokeStyle = '#2c3344'; ctx.lineWidth = 7;
+  ctx.beginPath(); ctx.moveTo(x - 5, y - 40); ctx.lineTo(x - 5 + sw, y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + 5, y - 40); ctx.lineTo(x + 5 - sw, y); ctx.stroke();
+  // abrigo
+  ctx.fillStyle = '#8e3b46';
+  ctx.beginPath();
+  ctx.moveTo(x - 13, y - 84); ctx.lineTo(x + 13, y - 84);
+  ctx.lineTo(x + 20, y - 36); ctx.lineTo(x - 20, y - 36);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#5e2630';
+  for (const by of [-72, -60, -48]){ ctx.beginPath(); ctx.arc(x, y + by, 2.4, 0, 7); ctx.fill(); }
+  // pañuelo (платок)
+  ctx.fillStyle = '#d9534f';
+  ctx.beginPath(); ctx.arc(x, y - 96, 14, 0, 7); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(x, y - 84); ctx.lineTo(x - 5, y - 75); ctx.lineTo(x + 5, y - 75);
+  ctx.closePath(); ctx.fill();                                    // nudo
+  ctx.fillStyle = 'rgba(255,255,255,.85)';
+  for (const [ox, oy] of [[-6, -102], [5, -104], [0, -96]]){
+    ctx.beginPath(); ctx.arc(x + ox, y + oy, 1.6, 0, 7); ctx.fill();
+  }
+  // cara
+  ctx.fillStyle = '#f2c9a0';
+  ctx.beginPath(); ctx.arc(x + 1.5 * f, y - 93, 9, 0, 7); ctx.fill();
+  ctx.fillStyle = '#222';
+  ctx.beginPath(); ctx.arc(x - 3 + 1.5 * f, y - 95, 1.4, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 3 + 1.5 * f, y - 95, 1.4, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#b07a64'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(x + 1.5 * f, y - 90, 3, 0.3, Math.PI - 0.3); ctx.stroke();
+}
+
+function drawDaughter(x, gy, bob, t, f){
+  const y = gy - bob;
+  const sw = G.player.moving ? Math.sin(t * 9 + Math.PI) * 6 : 0;
+  // piernas
+  ctx.strokeStyle = '#7a4a52'; ctx.lineWidth = 5;
+  ctx.beginPath(); ctx.moveTo(x - 3, y - 22); ctx.lineTo(x - 3 + sw, y); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x + 3, y - 22); ctx.lineTo(x + 3 - sw, y); ctx.stroke();
+  // abrigo
+  ctx.fillStyle = '#e8889c';
+  ctx.beginPath();
+  ctx.moveTo(x - 8, y - 42); ctx.lineTo(x + 8, y - 42);
+  ctx.lineTo(x + 13, y - 20); ctx.lineTo(x - 13, y - 20);
+  ctx.closePath(); ctx.fill();
+  // colitas (detrás de la cara)
+  ctx.fillStyle = '#6b4226';
+  ctx.beginPath(); ctx.arc(x - 12, y - 54, 5.5, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 12, y - 54, 5.5, 0, 7); ctx.fill();
+  ctx.fillStyle = '#d9534f';
+  ctx.beginPath(); ctx.arc(x - 9, y - 53, 2, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 9, y - 53, 2, 0, 7); ctx.fill();
+  // pelo + cara
+  ctx.fillStyle = '#6b4226';
+  ctx.beginPath(); ctx.arc(x, y - 53, 10, 0, 7); ctx.fill();
+  ctx.fillStyle = '#f7d3ae';
+  ctx.beginPath(); ctx.arc(x, y - 51, 8, 0, 7); ctx.fill();
+  // mejillas rosadas
+  ctx.fillStyle = 'rgba(247,140,162,.75)';
+  ctx.beginPath(); ctx.arc(x - 4.5, y - 49, 2.4, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 4.5, y - 49, 2.4, 0, 7); ctx.fill();
+  // ojos
+  ctx.fillStyle = '#222';
+  ctx.beginPath(); ctx.arc(x - 3, y - 52, 1.3, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(x + 3, y - 52, 1.3, 0, 7); ctx.fill();
+  // lengua al chupar
+  if (G.state === 'drink' && G.lickFlash > 0){
+    ctx.fillStyle = '#e76a8a';
+    ctx.beginPath(); ctx.ellipse(x + 7 * f, y - 47, 4.5, 2.6, 0, 0, 7); ctx.fill();
+  }
+  // vasito en la mano cuando hay hielo activo
+  if (G.state === 'drink' && G.glass){
+    const gx = x + 13 * f, gyy = y - 34;
+    ctx.fillStyle = 'rgba(190,230,255,.8)';
+    ctx.fillRect(gx - 6, gyy - 8, 12, 14);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5;
+    ctx.strokeRect(gx - 6, gyy - 8, 12, 14);
+    ctx.fillStyle = 'rgba(255,255,255,.9)';
+    ctx.fillRect(gx - 3, gyy - 6, 4, 4);
+    ctx.fillRect(gx + 0, gyy - 1, 4, 4);
+  }
+}
+
+function drawGlassPanel(){
+  const g = G.glass;
+  const pw = Math.min(640, W - 20), ph = 132;
+  const px0 = (W - pw) / 2, py0 = 86;
+  ctx.fillStyle = 'rgba(8,20,36,.88)';
+  rr(px0, py0, pw, ph, 16); ctx.fill();
+  ctx.strokeStyle = 'rgba(160,220,255,.35)'; ctx.lineWidth = 2;
+  rr(px0, py0, pw, ph, 16); ctx.stroke();
+
+  ctx.fillStyle = '#cfe8ff';
+  ctx.font = '800 15px sans-serif'; ctx.textAlign = 'center';
+  const left = g.cubes.filter(c => c.state === 'ok').length;
+  ctx.fillText('¡CHUPA! ESPACIO o CLICK — quedan ' + left + ' cubito' + (left === 1 ? '' : 's'), W / 2, py0 + 24);
+
+  const n = g.cubes.length;
+  const cw = Math.min(62, (pw - 36) / n);
+  let sx = W / 2 - (cw * n) / 2;
+
+  g.cubes.forEach((c, i) => {
+    const cx = sx + i * cw + cw / 2;
+    const cy = py0 + 74;
+    const active = i === g.idx && c.state === 'ok';
+
+    if (active){
+      ctx.strokeStyle = '#ffd76e'; ctx.lineWidth = 2.5;
+      rr(cx - cw / 2 + 3, py0 + 36, cw - 6, 78, 8); ctx.stroke();
+    }
+
+    if (c.state === 'eaten'){
+      ctx.fillStyle = '#7ee787'; ctx.font = '900 22px sans-serif';
+      ctx.fillText('✓', cx, cy + 7);
+    } else if (c.state === 'melted'){
+      ctx.fillStyle = 'rgba(120,180,220,.5)';
+      ctx.beginPath(); ctx.ellipse(cx, cy + 12, 13, 4.5, 0, 0, 7); ctx.fill();
+      ctx.fillStyle = '#ef5350'; ctx.font = '900 18px sans-serif';
+      ctx.fillText('✗', cx, cy + 2);
+    } else {
+      const pulse = active && G.lickFlash > 0 ? 1.18 : 1;
+      const s = (active ? 34 : 25) * (0.55 + 0.45 * c.temp) * pulse;
+      // cubito
+      ctx.fillStyle = 'rgba(165,222,255,.9)';
+      rr(cx - s / 2, cy - s / 2, s, s, 5); ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = 2;
+      rr(cx - s / 2, cy - s / 2, s, s, 5); ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(cx - s / 4, cy + s / 4); ctx.lineTo(cx + s / 4, cy - s / 4);
+      ctx.stroke();
+      // gota si está por derretirse
+      if (c.temp < 0.35){
+        ctx.fillStyle = 'rgba(140,200,240,.9)';
+        ctx.beginPath(); ctx.arc(cx + s / 2 - 1, cy + s / 2 + 3, 2.5, 0, 7); ctx.fill();
+      }
+      // progreso de chupadas (solo el activo)
+      if (active){
+        const bw = cw - 14;
+        ctx.fillStyle = 'rgba(255,255,255,.18)';
+        rr(cx - bw / 2, py0 + 42, bw, 5, 2.5); ctx.fill();
+        ctx.fillStyle = '#fff';
+        rr(cx - bw / 2, py0 + 42, bw * Math.min(1, c.licks / c.need), 5, 2.5); ctx.fill();
+      }
+      // barra de temperatura: azul → roja
+      const bw = cw - 12;
+      ctx.fillStyle = '#15202f';
+      rr(cx - bw / 2, cy + 24, bw, 8, 4); ctx.fill();
+      ctx.fillStyle = c.temp > 0.5 ? '#4fc3f7' : c.temp > 0.25 ? '#ffb74d' : '#ef5350';
+      rr(cx - bw / 2, cy + 24, Math.max(2, bw * c.temp), 8, 4); ctx.fill();
+    }
+  });
+  ctx.textAlign = 'left';
+}
+
+// ---------- bucle principal ----------
+let last = performance.now();
+function loop(now){
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (G.state !== 'start') update(dt);
+  updateHUD();
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
