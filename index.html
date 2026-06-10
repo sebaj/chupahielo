@@ -2,11 +2,17 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>ChupaHielo ❄️</title>
 <style>
-  html,body{margin:0;height:100%;overflow:hidden;background:#0e1420;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;user-select:none;-webkit-user-select:none}
-  #c{display:block;cursor:pointer}
+  html,body{margin:0;height:100%;overflow:hidden;background:#0e1420;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;user-select:none;-webkit-user-select:none;overscroll-behavior:none}
+  #c{display:block;cursor:pointer;touch-action:none}
+  .tbtn{position:fixed;bottom:20px;width:78px;height:78px;border-radius:50%;background:rgba(10,20,35,.55);border:2px solid rgba(255,255,255,.35);color:#fff;font-size:30px;display:none;align-items:center;justify-content:center;z-index:7;touch-action:none;-webkit-tap-highlight-color:transparent}
+  .tbtn.held{background:rgba(79,183,232,.55)}
+  #btnL{left:18px}
+  #btnR{left:110px}
+  body.touch .tbtn{display:flex}
+  body.touch #prompt{bottom:120px}
   .chip{position:fixed;top:14px;padding:8px 16px;background:rgba(10,20,35,.78);color:#fff;border-radius:12px;font-weight:800;font-size:20px;letter-spacing:.5px;border:1px solid rgba(255,255,255,.15);text-align:center;z-index:5}
   .chip small{display:block;font-weight:500;font-size:11px;opacity:.65;letter-spacing:1px}
   #levelChip{left:14px}
@@ -33,6 +39,8 @@
 <div class="chip" id="scoreChip"><span id="pts">0</span><small>PUNTOS</small></div>
 
 <button id="prompt">❄️ Pedir hielo <kbd>E</kbd></button>
+<div class="tbtn" id="btnL">◀</div>
+<div class="tbtn" id="btnR">▶</div>
 <div id="banner"></div>
 
 <div class="overlay" id="start">
@@ -174,6 +182,30 @@ $('playBtn').addEventListener('click', startGame);
 $('retryBtn').addEventListener('click', restart);
 $('prompt').addEventListener('click', () => { if (G.state === 'walk' && G.nearCafe) orderIce(G.nearCafe); });
 
+// ---------- controles táctiles ----------
+const IS_TOUCH = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+const touch = { left:false, right:false };
+if (IS_TOUCH){
+  document.body.classList.add('touch');
+  $('prompt').textContent = '❄️ Pedir hielo';
+  document.querySelector('#start .keys').innerHTML =
+    '<b>◀ ▶</b> — caminar &nbsp;·&nbsp; tocá el botón dorado para pedir hielo &nbsp;·&nbsp; <b>tocá la pantalla</b> (repetido) — ¡chupar!';
+}
+function bindHold(el, prop){
+  el.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    touch[prop] = true;
+    el.classList.add('held');
+    el.setPointerCapture(e.pointerId);
+  });
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']){
+    el.addEventListener(ev, () => { touch[prop] = false; el.classList.remove('held'); });
+  }
+  el.addEventListener('contextmenu', e => e.preventDefault());
+}
+bindHold($('btnL'), 'left');
+bindHold($('btnR'), 'right');
+
 // ---------- nieve ----------
 const flakes = [];
 for (let i = 0; i < 90; i++){
@@ -195,7 +227,7 @@ function update(dt){
   }
 
   if (G.state === 'walk'){
-    const dir = (keys['arrowright'] || keys['d'] ? 1 : 0) - (keys['arrowleft'] || keys['a'] ? 1 : 0);
+    const dir = (keys['arrowright'] || keys['d'] || touch.right ? 1 : 0) - (keys['arrowleft'] || keys['a'] || touch.left ? 1 : 0);
     G.player.moving = dir !== 0;
     if (dir !== 0){
       G.player.x += dir * SPEED * dt;
@@ -499,7 +531,7 @@ function drawGlassPanel(){
   ctx.fillStyle = '#cfe8ff';
   ctx.font = '800 15px sans-serif'; ctx.textAlign = 'center';
   const left = g.cubes.filter(c => c.state === 'ok').length;
-  ctx.fillText('¡CHUPA! ESPACIO o CLICK — quedan ' + left + ' cubito' + (left === 1 ? '' : 's'), W / 2, py0 + 24);
+  ctx.fillText('¡CHUPA! ' + (IS_TOUCH ? 'TOCÁ LA PANTALLA' : 'ESPACIO o CLICK') + ' — quedan ' + left + ' cubito' + (left === 1 ? '' : 's'), W / 2, py0 + 24);
 
   const n = g.cubes.length;
   const cw = Math.min(62, (pw - 36) / n);
